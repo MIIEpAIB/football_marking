@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,3 +151,11 @@ async def index_page():
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8765"))
+    uvicorn.run(app, host=host, port=port)
