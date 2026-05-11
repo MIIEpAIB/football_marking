@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Odds-API 早盘足球</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0c0f14;
+      --panel: #141a22;
+      --border: #243044;
+      --text: #e8edf5;
+      --muted: #8b9bb0;
+      --accent: #3ddc97;
+      --danger: #ff6b6b;
+      --mono: "JetBrains Mono", ui-monospace, monospace;
+      --sans: "DM Sans", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2636 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(12, 15, 20, 0.85);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    h1 span { color: var(--accent); }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    label { font-size: 0.8rem; color: var(--muted); }
+    select, input, button {
+      font-family: var(--sans);
+      font-size: 0.875rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 0.45rem 0.65rem;
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(180deg, #1f2a3a, #18212e);
+      border-color: #2c3d52;
+      font-weight: 600;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.2fr);
+      gap: 1rem;
+      padding: 1rem 1.25rem 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .card h2 {
+      margin: 0;
+      padding: 0.75rem 1rem;
+      font-size: 0.95rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.2);
+    }
+    .list {
+      max-height: min(70vh, 720px);
+      overflow: auto;
+    }
+    .row {
+      padding: 0.65rem 1rem;
+      border-bottom: 1px solid rgba(36, 48, 68, 0.6);
+      cursor: pointer;
+      display: grid;
+      gap: 0.2rem;
+    }
+    .row:hover { background: rgba(61, 220, 151, 0.06); }
+    .row.active { border-left: 3px solid var(--accent); background: rgba(61, 220, 151, 0.08); }
+    .teams { font-weight: 600; font-size: 0.92rem; }
+    .meta { font-size: 0.78rem; color: var(--muted); font-family: var(--mono); }
+    .detail {
+      padding: 1rem;
+      max-height: min(75vh, 800px);
+      overflow: auto;
+    }
+    .detail h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .pill {
+      display: inline-block;
+      font-size: 0.72rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      background: #1e2a38;
+      color: var(--muted);
+      margin-right: 0.35rem;
+    }
+    pre {
+      margin: 0.75rem 0 0;
+      padding: 0.75rem;
+      background: #0a0d12;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .error { color: var(--danger); padding: 1rem; font-size: 0.9rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); padding: 0 1rem 1rem; line-height: 1.5; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Odds-API <span>早盘足球</span></h1>
+    <div class="toolbar">
+      <div>
+        <label for="league">联赛</label><br />
+        <select id="league" style="min-width: 220px;">
+          <option value="">全部</option>
+        </select>
+      </div>
+      <div>
+        <label for="bookmakers">赔率预览庄家（逗号分隔，可选）</label><br />
+        <input id="bookmakers" type="text" placeholder="Bet365,Unibet" style="min-width: 200px;" />
+      </div>
+      <div style="align-self: flex-end;">
+        <button id="refresh" type="button">刷新早盘</button>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section class="card">
+      <h2>赛前赛事</h2>
+      <div id="list" class="list"></div>
+      <p class="hint">
+        数据来自 <a href="https://odds-api.io/" target="_blank" rel="noopener">Odds-API.io</a>。
+        本地服务通过 <code>ODDS_API_KEY</code> 代理请求，请勿把密钥写进前端或提交到 Git。
+      </p>
+    </section>
+    <section class="card">
+      <h2>赛事详情与赔率</h2>
+      <div id="detail" class="detail">
+        <p class="hint" style="padding: 0;">选择左侧一场比赛查看 JSON 详情；可在上方填写庄家后刷新以附带前 10 场的多盘口预览。</p>
+      </div>
+    </section>
+  </main>
+  <script>
+    const leagueEl = document.getElementById("league");
+    const bookmakersEl = document.getElementById("bookmakers");
+    const listEl = document.getElementById("list");
+    const detailEl = document.getElementById("detail");
+    const refreshBtn = document.getElementById("refresh");
+
+    let selectedId = null;
+
+    async function fetchJson(url) {
+      const r = await fetch(url);
+      const text = await r.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = text; }
+      if (!r.ok) {
+        const msg = typeof data === "object" && data && data.detail ? JSON.stringify(data.detail) : text;
+        throw new Error(msg || r.statusText);
+      }
+      return data;
+    }
+
+    async function loadLeagues() {
+      const leagues = await fetchJson("/api/leagues?sport=football");
+      leagueEl.innerHTML = '<option value="">全部</option>';
+      if (Array.isArray(leagues)) {
+        leagues.forEach((L) => {
+          const opt = document.createElement("option");
+          opt.value = L.slug || L.id || "";
+          opt.textContent = L.name || opt.value;
+          leagueEl.appendChild(opt);
+        });
+      }
+    }
+
+    function renderList(payload) {
+      const events = payload.events || [];
+      listEl.innerHTML = "";
+      if (!events.length) {
+        listEl.innerHTML = '<div class="error">暂无早盘赛事（或密钥/套餐无权限）</div>';
+        return;
+      }
+      events.forEach((ev) => {
+        const div = document.createElement("div");
+        div.className = "row" + (selectedId === ev.id ? " active" : "");
+        div.dataset.eventId = String(ev.id);
+        const league = ev.league && ev.league.name ? ev.league.name : "";
+        div.innerHTML = `
+          <div class="teams">${escapeHtml(ev.home)} <span style="color:#5c6b7e">vs</span> ${escapeHtml(ev.away)}</div>
+          <div class="meta">${escapeHtml(league)} · ${escapeHtml(ev.date || "")} · #${ev.id}</div>
+        `;
+        div.addEventListener("click", () => selectEvent(ev.id));
+        listEl.appendChild(div);
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function loadPrematch() {
+      refreshBtn.disabled = true;
+      listEl.innerHTML = '<div class="hint" style="padding:1rem">加载中…</div>';
+      try {
+        const params = new URLSearchParams({ sport: "football", limit: "200" });
+        const lg = leagueEl.value;
+        if (lg) params.set("league", lg);
+        const bm = bookmakersEl.value.trim();
+        if (bm) params.set("bookmakers", bm);
+        const data = await fetchJson("/api/events/prematch?" + params.toString());
+        renderList(data);
+      } catch (e) {
+        listEl.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    async function selectEvent(id) {
+      selectedId = id;
+      detailEl.innerHTML = '<p class="hint" style="padding:0">加载中…</p>';
+      listEl.querySelectorAll(".row").forEach((el) => {
+        el.classList.toggle("active", el.dataset.eventId === String(id));
+      });
+      try {
+        const ev = await fetchJson("/api/events/" + id);
+        const bm = bookmakersEl.value.trim();
+        let odds = null;
+        try {
+          const q = bm ? "?bookmakers=" + encodeURIComponent(bm) : "";
+          odds = await fetchJson("/api/odds/" + id + q);
+        } catch (oe) {
+          odds = { error: oe.message };
+        }
+        const league = ev.league && ev.league.name ? ev.league.name : "";
+        detailEl.innerHTML = `
+          <h3>${escapeHtml(ev.home)} vs ${escapeHtml(ev.away)}</h3>
+          <div>
+            <span class="pill">${escapeHtml(league)}</span>
+            <span class="pill">${escapeHtml(ev.date || "")}</span>
+            <span class="pill">status: ${escapeHtml(ev.status || "")}</span>
+          </div>
+          <h3 style="margin-top:1rem">赛事</h3>
+          <pre>${escapeHtml(JSON.stringify(ev, null, 2))}</pre>
+          <h3 style="margin-top:1rem">赔率</h3>
+          <pre>${escapeHtml(JSON.stringify(odds, null, 2))}</pre>
+        `;
+      } catch (e) {
+        detailEl.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    refreshBtn.addEventListener("click", loadPrematch);
+    leagueEl.addEventListener("change", loadPrematch);
+
+    (async () => {
+      try {
+        const h = await fetchJson("/api/health");
+        if (!h.api_key_configured) {
+          listEl.innerHTML = '<div class="error">未配置 ODDS_API_KEY：在项目目录创建 .env 并写入密钥后重启服务。</div>';
+          return;
+        }
+        await loadLeagues();
+        await loadPrematch();
+      } catch (e) {
+        listEl.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+      }
+    })();
+  </script>
+</body>
+</html>
