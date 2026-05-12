@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -62,6 +63,18 @@ def _is_prematch_event(ev: dict[str, Any]) -> bool:
         return True
 
 
+def _upstream_odds_error_detail(exc: httpx.HTTPStatusError) -> dict[str, Any]:
+    try:
+        body: Any = exc.response.json()
+    except Exception:
+        body = exc.response.text[:8000]
+    return {
+        "message": "上游赔率接口返回错误",
+        "status_code": exc.response.status_code,
+        "body": body,
+    }
+
+
 @app.get("/api/health")
 async def health():
     try:
@@ -110,14 +123,22 @@ async def api_prematch_events(
         raise HTTPException(502, "Unexpected events payload")
     prematch = [e for e in raw if isinstance(e, dict) and _is_prematch_event(e)]
 
+    bm_csv = (bookmakers or "").strip() or (await c.selected_bookmakers_csv() or "")
+
     odds_map: dict[int, Any] = {}
-    if bookmakers and prematch:
+    if bm_csv and prematch:
         ids = [int(e["id"]) for e in prematch if e.get("id") is not None][:10]
         if ids:
-            multi = await c.odds_multi(
-                event_ids=",".join(str(i) for i in ids),
-                bookmakers=bookmakers,
-            )
+            try:
+                multi = await c.odds_multi(
+                    event_ids=",".join(str(i) for i in ids),
+                    bookmakers=bm_csv,
+                )
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=_upstream_odds_error_detail(e),
+                ) from e
             if isinstance(multi, list):
                 for item in multi:
                     if isinstance(item, dict) and item.get("id") is not None:
@@ -136,10 +157,33 @@ async def api_odds(
     event_id: int,
     bookmakers: str | None = Query(
         None,
-        description="Comma-separated; omit to use account default selection if API allows",
+        description="Comma-separated; 省略时使用 Odds-API 账户已选默认庄家",
     ),
 ):
-    return await _c().odds(event_id=event_id, bookmakers=bookmakers)
+    c = _c()
+    bm = (bookmakers or "").strip()
+    if not bm:
+        bm = (await c.selected_bookmakers_csv() or "").strip()
+    if not bm:
+        raise HTTPException(
+            400,
+            detail={
+                "message": "未指定庄家：请在页面填写「赔率预览庄家」（逗号分隔），或在 Odds-API 控制台选择默认庄家后再试。",
+            },
+        )
+    try:
+        data = await c.odds(event_id=event_id, bookmakers=bm)
+        if isinstance(data, dict):
+            data = {
+                **data,
+                "_meta": {"bookmakers_requested": bm},
+            }
+        return data
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=_upstream_odds_error_detail(e),
+        ) from e
 
 
 @app.get("/")
@@ -156,6 +200,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.environ.get("HOST", "127.0.0.1")
+    # 0.0.0.0 = 监听所有网卡，局域网/公网可通过本机 IP 访问（需防火墙放行）
+    host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8765"))
     uvicorn.run(app, host=host, port=port)
