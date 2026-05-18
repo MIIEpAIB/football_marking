@@ -17,7 +17,7 @@ from app.config import (
 )
 from app.odds_client import OddsApiClient
 from app.redis_store import RedisStore
-from app.sync_service import sync_prematch_to_redis
+from app.sync_service import ensure_odds_in_redis, sync_prematch_to_redis
 
 api_client: OddsApiClient | None = None
 redis_store: RedisStore | None = None
@@ -174,14 +174,70 @@ async def api_event(event_id: int, sport: str = Query(DEFAULT_SPORT)):
 
 
 @app.get("/api/odds/{event_id}")
-async def api_odds(event_id: int, sport: str = Query(DEFAULT_SPORT)):
-    odds = await _redis().get_odds(sport, event_id)
-    if odds is None:
-        raise HTTPException(
-            404,
-            detail={"message": f"赛事 {event_id} 的赔率未缓存，请重新同步并确保已填写庄家"},
+async def api_odds(
+    event_id: int,
+    sport: str = Query(DEFAULT_SPORT),
+    bookmakers: str | None = Query(None),
+    refresh: bool = Query(False, description="强制从 Odds-API 拉取并写回 Redis"),
+):
+    """优先读 Redis；未命中则拉取上游并写入 Redis 后返回。"""
+    store = _redis()
+    if not refresh:
+        cached = await store.get_odds(sport, event_id)
+        if cached is not None:
+            return cached
+
+    try:
+        get_api_key()
+    except RuntimeError as e:
+        raise HTTPException(400, detail={"message": str(e)}) from e
+
+    try:
+        return await ensure_odds_in_redis(
+            _api(),
+            store,
+            sport,
+            event_id,
+            bookmakers,
+            force_refresh=refresh,
         )
-    return odds
+    except ValueError as e:
+        raise HTTPException(404, detail={"message": str(e)}) from e
+    except RuntimeError as e:
+        err = e.args[0] if e.args else {"message": str(e)}
+        if isinstance(err, dict):
+            raise HTTPException(502, detail=err) from e
+        raise HTTPException(502, detail={"message": str(e)}) from e
+
+
+@app.post("/api/sync/odds/{event_id}")
+async def api_sync_odds_one(
+    event_id: int,
+    sport: str = Query(DEFAULT_SPORT),
+    bookmakers: str | None = Query(None),
+):
+    """单场赔率：从 Odds-API 拉取并写入 Redis。"""
+    try:
+        get_api_key()
+    except RuntimeError as e:
+        raise HTTPException(400, detail={"message": str(e)}) from e
+    try:
+        data = await ensure_odds_in_redis(
+            _api(),
+            _redis(),
+            sport,
+            event_id,
+            bookmakers,
+            force_refresh=True,
+        )
+        return {"ok": True, "odds": data}
+    except ValueError as e:
+        raise HTTPException(404, detail={"message": str(e)}) from e
+    except RuntimeError as e:
+        err = e.args[0] if e.args else {"message": str(e)}
+        if isinstance(err, dict):
+            raise HTTPException(502, detail=err) from e
+        raise HTTPException(502, detail={"message": str(e)}) from e
 
 
 # --- 直连上游（调试用，页面默认不用） ---

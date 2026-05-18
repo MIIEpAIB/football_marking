@@ -186,7 +186,7 @@
     <section class="card">
       <h2>赛事详情与赔率</h2>
       <div id="detail" class="detail">
-        <p class="hint" style="padding: 0;">选择左侧比赛查看 Redis 中的赛事与赔率 JSON。若无赔率请先同步并填写庄家。</p>
+        <p class="hint" style="padding: 0;">选择比赛后优先读 Redis 赔率；若未缓存会自动从 Odds-API 拉取并写入 Redis。请先同步赛事并填写庄家。</p>
       </div>
     </section>
   </main>
@@ -200,6 +200,18 @@
     const cacheStatusEl = document.getElementById("cacheStatus");
 
     let selectedId = null;
+    let oddsPreviewCache = {};
+
+    function apiErrorMessage(data, fallback) {
+      if (typeof data === "string") return data;
+      if (!data || typeof data !== "object") return fallback;
+      const d = data.detail;
+      if (typeof d === "string") return d;
+      if (d && typeof d === "object" && d.message) return d.message;
+      if (d) return JSON.stringify(d);
+      if (data.message) return data.message;
+      return fallback;
+    }
 
     async function fetchJson(url, options) {
       const r = await fetch(url, options);
@@ -207,12 +219,7 @@
       let data;
       try { data = JSON.parse(text); } catch { data = text; }
       if (!r.ok) {
-        let msg = r.statusText;
-        if (typeof data === "object" && data) {
-          if (data.detail) msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
-          else if (data.message) msg = data.message;
-        } else if (typeof data === "string") msg = data;
-        throw new Error(msg);
+        throw new Error(apiErrorMessage(data, r.statusText));
       }
       return data;
     }
@@ -254,6 +261,7 @@
 
     function renderList(payload) {
       const events = payload.events || [];
+      oddsPreviewCache = payload.odds_preview || {};
       listEl.innerHTML = "";
       if (!events.length) {
         listEl.innerHTML = '<div class="error">Redis 中暂无赛事，请先点击「同步到 Redis」</div>';
@@ -331,11 +339,17 @@
       });
       try {
         const ev = await fetchJson("/api/events/" + id + "?sport=football");
-        let odds = null;
-        try {
-          odds = await fetchJson("/api/odds/" + id + "?sport=football");
-        } catch (oe) {
-          odds = { error: oe.message };
+        let odds = oddsPreviewCache[id] ?? oddsPreviewCache[String(id)] ?? null;
+        if (!odds) {
+          try {
+            const q = new URLSearchParams({ sport: "football" });
+            const bm = bookmakersEl.value.trim();
+            if (bm) q.set("bookmakers", bm);
+            odds = await fetchJson("/api/odds/" + id + "?" + q.toString());
+            oddsPreviewCache[id] = odds;
+          } catch (oe) {
+            odds = { error: oe.message };
+          }
         }
         const league = ev.league && ev.league.name ? ev.league.name : "";
         detailEl.innerHTML = `

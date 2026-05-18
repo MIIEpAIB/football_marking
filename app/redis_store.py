@@ -136,3 +136,25 @@ class RedisStore:
     async def get_odds(self, sport: str, event_id: int) -> Any | None:
         raw = await self._r().get(self._sport_key(sport, "odds", str(event_id)))
         return json.loads(raw) if raw else None
+
+    async def set_odds(self, sport: str, event_id: int, odds: Any) -> None:
+        await self._r().set(
+            self._sport_key(sport, "odds", str(event_id)),
+            json.dumps(odds, ensure_ascii=False),
+        )
+
+    async def recount_odds_in_meta(self, sport: str) -> int:
+        """Recount cached odds keys and update meta.odds_count."""
+        r = self._r()
+        ids = await r.lrange(self._sport_key(sport, "event_ids"), 0, -1)
+        count = 0
+        if ids:
+            pipe = r.pipeline()
+            for eid in ids:
+                pipe.exists(self._sport_key(sport, "odds", eid))
+            exists_flags = await pipe.execute()
+            count = sum(1 for x in exists_flags if x)
+        meta = await self.get_meta(sport) or {"sport": sport}
+        meta["odds_count"] = count
+        await self.set_meta(sport, meta)
+        return count
