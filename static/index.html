@@ -141,6 +141,17 @@
     .error { color: var(--danger); padding: 1rem; font-size: 0.9rem; }
     .hint { font-size: 0.8rem; color: var(--muted); padding: 0 1rem 1rem; line-height: 1.5; }
     a { color: var(--accent); }
+    .status-bar {
+      font-size: 0.78rem;
+      color: var(--muted);
+      padding: 0 1.5rem 0.75rem;
+      font-family: var(--mono);
+    }
+    .status-bar strong { color: var(--accent); }
+    button.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
   </style>
 </head>
 <body>
@@ -154,27 +165,28 @@
         </select>
       </div>
       <div>
-        <label for="bookmakers">赔率预览庄家（逗号分隔，可选）</label><br />
+        <label for="bookmakers">同步用庄家（逗号分隔，可留空）</label><br />
         <input id="bookmakers" type="text" placeholder="Bet365,Unibet" style="min-width: 200px;" />
       </div>
       <div style="align-self: flex-end;">
-        <button id="refresh" type="button">刷新早盘</button>
+        <button id="sync" type="button" class="primary">同步到 Redis</button>
+        <button id="refresh" type="button">从 Redis 加载</button>
       </div>
     </div>
   </header>
+  <p id="cacheStatus" class="status-bar"></p>
   <main>
     <section class="card">
       <h2>赛前赛事</h2>
       <div id="list" class="list"></div>
       <p class="hint">
-        数据来自 <a href="https://odds-api.io/" target="_blank" rel="noopener">Odds-API.io</a>。
-        本地服务通过 <code>ODDS_API_KEY</code> 代理请求，请勿把密钥写进前端或提交到 Git。
+        流程：<strong>同步到 Redis</strong> 从 Odds-API 拉取并缓存；<strong>从 Redis 加载</strong> 仅读本地缓存，便于下注对照。需本机运行 Redis（<code>REDIS_URL</code>）。
       </p>
     </section>
     <section class="card">
       <h2>赛事详情与赔率</h2>
       <div id="detail" class="detail">
-        <p class="hint" style="padding: 0;">选择左侧一场比赛查看 JSON 详情。「赔率预览庄家」可留空：将使用你在 Odds-API 控制台选的默认庄家；填写则用逗号分隔多个庄家。刷新列表可附带前 10 场的盘口预览。</p>
+        <p class="hint" style="padding: 0;">选择左侧比赛查看 Redis 中的赛事与赔率 JSON。若无赔率请先同步并填写庄家。</p>
       </div>
     </section>
   </main>
@@ -184,19 +196,47 @@
     const listEl = document.getElementById("list");
     const detailEl = document.getElementById("detail");
     const refreshBtn = document.getElementById("refresh");
+    const syncBtn = document.getElementById("sync");
+    const cacheStatusEl = document.getElementById("cacheStatus");
 
     let selectedId = null;
 
-    async function fetchJson(url) {
-      const r = await fetch(url);
+    async function fetchJson(url, options) {
+      const r = await fetch(url, options);
       const text = await r.text();
       let data;
       try { data = JSON.parse(text); } catch { data = text; }
       if (!r.ok) {
-        const msg = typeof data === "object" && data && data.detail ? JSON.stringify(data.detail) : text;
-        throw new Error(msg || r.statusText);
+        let msg = r.statusText;
+        if (typeof data === "object" && data) {
+          if (data.detail) msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+          else if (data.message) msg = data.message;
+        } else if (typeof data === "string") msg = data;
+        throw new Error(msg);
       }
       return data;
+    }
+
+    function updateCacheStatus(meta) {
+      if (!meta) {
+        cacheStatusEl.textContent = "Redis：尚无缓存，请先同步";
+        return;
+      }
+      cacheStatusEl.innerHTML =
+        `Redis：<strong>${meta.event_count ?? 0}</strong> 场 · 赔率 <strong>${meta.odds_count ?? 0}</strong> 条 · ` +
+        `庄家 ${escapeHtml(meta.bookmakers || "默认")} · 同步于 ${escapeHtml(meta.synced_at || "")}`;
+    }
+
+    async function refreshCacheStatus() {
+      try {
+        const h = await fetchJson("/api/health");
+        updateCacheStatus(h.cache_meta);
+        if (!h.redis_connected) {
+          cacheStatusEl.innerHTML = '<span class="error">Redis 未连接，请启动 Redis 并配置 REDIS_URL</span>';
+        }
+      } catch {
+        cacheStatusEl.textContent = "";
+      }
     }
 
     async function loadLeagues() {
@@ -216,7 +256,7 @@
       const events = payload.events || [];
       listEl.innerHTML = "";
       if (!events.length) {
-        listEl.innerHTML = '<div class="error">暂无早盘赛事（或密钥/套餐无权限）</div>';
+        listEl.innerHTML = '<div class="error">Redis 中暂无赛事，请先点击「同步到 Redis」</div>';
         return;
       }
       events.forEach((ev) => {
@@ -243,18 +283,42 @@
 
     async function loadPrematch() {
       refreshBtn.disabled = true;
-      listEl.innerHTML = '<div class="hint" style="padding:1rem">加载中…</div>';
+      listEl.innerHTML = '<div class="hint" style="padding:1rem">从 Redis 加载中…</div>';
       try {
-        const params = new URLSearchParams({ sport: "football", limit: "200" });
+        const params = new URLSearchParams({ sport: "football" });
+        const lg = leagueEl.value;
+        if (lg) params.set("league", lg);
+        const data = await fetchJson("/api/events/prematch?" + params.toString());
+        renderList(data);
+        updateCacheStatus(data.meta);
+      } catch (e) {
+        listEl.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    async function syncToRedis() {
+      syncBtn.disabled = true;
+      refreshBtn.disabled = true;
+      cacheStatusEl.textContent = "正在从 Odds-API 同步到 Redis…";
+      try {
+        const params = new URLSearchParams({ sport: "football", fetch_odds: "true" });
         const lg = leagueEl.value;
         if (lg) params.set("league", lg);
         const bm = bookmakersEl.value.trim();
         if (bm) params.set("bookmakers", bm);
-        const data = await fetchJson("/api/events/prematch?" + params.toString());
-        renderList(data);
+        const result = await fetchJson("/api/sync/prematch?" + params.toString(), { method: "POST" });
+        updateCacheStatus(result.meta);
+        if (result.odds_errors && result.odds_errors.length) {
+          console.warn("odds sync errors", result.odds_errors);
+        }
+        await loadLeagues();
+        await loadPrematch();
       } catch (e) {
-        listEl.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+        cacheStatusEl.innerHTML = `<span class="error">同步失败：${escapeHtml(e.message)}</span>`;
       } finally {
+        syncBtn.disabled = false;
         refreshBtn.disabled = false;
       }
     }
@@ -266,12 +330,10 @@
         el.classList.toggle("active", el.dataset.eventId === String(id));
       });
       try {
-        const ev = await fetchJson("/api/events/" + id);
-        const bm = bookmakersEl.value.trim();
+        const ev = await fetchJson("/api/events/" + id + "?sport=football");
         let odds = null;
         try {
-          const q = bm ? "?bookmakers=" + encodeURIComponent(bm) : "";
-          odds = await fetchJson("/api/odds/" + id + q);
+          odds = await fetchJson("/api/odds/" + id + "?sport=football");
         } catch (oe) {
           odds = { error: oe.message };
         }
@@ -294,16 +356,26 @@
     }
 
     refreshBtn.addEventListener("click", loadPrematch);
+    syncBtn.addEventListener("click", syncToRedis);
     leagueEl.addEventListener("change", loadPrematch);
 
     (async () => {
       try {
         const h = await fetchJson("/api/health");
-        if (!h.api_key_configured) {
-          listEl.innerHTML = '<div class="error">未配置 ODDS_API_KEY：在项目目录创建 .env 并写入密钥后重启服务。</div>';
+        if (!h.redis_connected) {
+          listEl.innerHTML = '<div class="error">Redis 未连接：请启动 Redis 并设置 REDIS_URL（默认 redis://127.0.0.1:6379/0）</div>';
+          await refreshCacheStatus();
           return;
         }
-        await loadLeagues();
+        if (!h.api_key_configured) {
+          listEl.innerHTML = '<div class="error">未配置 ODDS_API_KEY，同步功能不可用；仅可读取已有 Redis 缓存。</div>';
+        }
+        updateCacheStatus(h.cache_meta);
+        try {
+          await loadLeagues();
+        } catch {
+          /* 联赛需先同步 */
+        }
         await loadPrematch();
       } catch (e) {
         listEl.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
